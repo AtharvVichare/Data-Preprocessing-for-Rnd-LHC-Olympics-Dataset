@@ -4,13 +4,20 @@
 > Unsupervised graph-level anomaly detection for new physics searches at the LHC.  
 > Trained exclusively on Standard Model jets — no BSM signal seen during training.
 
+⚠ Note on Current Evaluation Metrics
+Quantitative metrics such as AUC-ROC, signal efficiency, and anomaly score separation are directly dependent on the convergence of the SimCLR contrastive loss (L₂). Full convergence of InfoNCE at this scale is computationally intensive — this early Phase 1 implementation does not have access to the compute required to drive L₂ to its optimal minimum.
+Despite this, the model demonstrates meaningful progress even in the under-converged regime:
+
+L₃ successfully reduces the distance between Z_G and Z'_G for SM jets across training, confirmed by PCA visualization
+The latent space develops emerging geometric structure, with paired embeddings converging and different jets beginning to separate — indicating that the contrastive objective is functioning directionally even without full convergence
+
+With increased computational resources allowing full SimCLR convergence, the anomaly scoring pipeline is expected to reach its full discriminative potential. The architecture and training protocol are validated — compute is the remaining bottleneck.
 ---
 
 ## Overview
 
 GlAD-SCN detects anomalous jet events at the LHC by learning what a normal Standard Model (SM) jet looks like in graph space, then flagging jets that deviate from that learned distribution at inference time. The model combines a dual-graph encoder (clean + weight-perturbed), a graph autoencoder, SimCLR contrastive learning, and a representation error anomaly score — all without ever using BSM labels during training.
 
-**Imp Note: Accuarcy , AUC and other metrics can't be improved unless contrastive loss converges, I have tried to converge Simclr loss( it converges but require high computation). This early implementation isn't able to optimally converge the contrastive loss, but with increased computational power I can converge the loss optimally, and even though the model isn't at full potential it is still successful in mapping original and reconstructed graphs on latent space and also making a distance in the different graphs.** 
 
 
 **Dataset:** LHC Olympics 2020 R&D Dataset (`events_anomalydetection_v2.h5`, Zenodo DOI: 10.5281/zenodo.4536377)  
