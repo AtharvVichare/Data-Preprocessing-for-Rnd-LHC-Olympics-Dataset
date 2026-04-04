@@ -76,7 +76,8 @@ Training follows a two-stage protocol to prevent the contrastive loss from domin
 ### 1. Latent space convergence
 <img width="1950" height="750" alt="image" src="https://github.com/user-attachments/assets/45f2544b-8717-4ad0-88f8-14252b0d7e46" />
 
-<img width="1950" height="750" alt="image" src="https://github.com/user-attachments/assets/da76591f-ccf7-4f45-be25-b118cb1cf9ce" />
+<img width="1950" height="750" alt="image" src="https://github.com/user-attachments/assets/470b8553-363b-43d8-b490-8f25352a0395" />
+
 
 The PCA visualization of Z_G (clean encoder) and Z'_G (re-encoder on reconstructed graph) shows clear evidence that all three losses work together as intended.
 
