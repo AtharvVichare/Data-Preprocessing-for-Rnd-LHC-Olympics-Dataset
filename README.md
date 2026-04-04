@@ -1,3 +1,177 @@
+# GlAD-SCN — Graph-Level Anomaly Detection via Stable ChebNet
+
+> **GSoC 2026 · ML4Sci · Phase 1 Implementation**  
+> Unsupervised graph-level anomaly detection for new physics searches at the LHC.  
+> Trained exclusively on Standard Model jets — no BSM signal seen during training.
+
+---
+
+## Overview
+
+GlAD-SCN detects anomalous jet events at the LHC by learning what a normal Standard Model (SM) jet looks like in graph space, then flagging jets that deviate from that learned distribution at inference time. The model combines a dual-graph encoder (clean + weight-perturbed), a graph autoencoder, SimCLR contrastive learning, and a representation error anomaly score — all without ever using BSM labels during training.
+
+**Dataset:** LHC Olympics 2020 R&D Dataset (`events_anomalydetection_v2.h5`, Zenodo DOI: 10.5281/zenodo.4536377)  
+**Framework:** PyTorch · PyTorch Geometric  
+**Phase:** 1 (ChebNet backbone) — Phase 2 (Stable ChebNet + improvements) in progress
+
+---
+
+## Architecture
+
+```
+Input jet graph G  (nodes: pT, η, φ  ·  k-NN edges, k=8)
+        │
+        ├─────────────────────────┐
+        ▼                         ▼
+Clean encoder f(θ)        Perturbed encoder f(θ′)
+3× ChebNet(K=5)           θ′ = θ + η·Δθ, Δθ~N(0,σ²)
+  + BN + ReLU             3× ChebNet(K=5) + BN + ReLU
+        │                         │
+   z_node, Z_G               Ẑ_G (graph embed)
+        │                         │
+        ├─────────────────────────┘
+        │              │
+        ▼              ▼
+  Graph autoencoder    SimCLR contrastive loss (L₂)
+  structure + attr     Z_G · Ẑ_G → MLP heads → InfoNCE
+  decoders → Ĝ · L₁         
+        │
+        ▼
+  Re-encoder f(θ) on Ĝ  (shared weights)
+  3× ChebNet(K=5) + BN + ReLU
+  → z′_node · Z′_G · L₃
+        │
+        ▼
+  L_total = L₁ + λ₁·L₂ + λ₂·L₃
+        │  (training only)
+        ▼
+  Anomaly score S(G) = Σ_v‖z_node,v − z′_node,v‖²/|V| + ‖Z_G − Z′_G‖²
+  (inference only — high S(G) → BSM candidate)
+```
+
+---
+
+## Training Protocol
+
+Training follows a two-stage protocol to prevent the contrastive loss from dominating an uninitialised latent space.
+
+**Stage 1 — Warm-up:** L₁ (reconstruction) and L₃ (representation error) only. The autoencoder establishes a stable SM reconstruction baseline before contrastive gradients are introduced.
+
+**Stage 2 — Full training:** All three losses active jointly. L₂ (SimCLR / InfoNCE) is introduced to shape the latent space, pulling same-jet pairs together and pushing different jets apart.
+
+| Hyperparameter | Value |
+|---|---|
+| Optimizer | AdamW |
+| Learning rate | 3e-4 with cosine annealing |
+| Batch size | 256 |
+| ChebNet order K | 5 |
+| Contrastive temperature τ | 0.5 |
+| Perturbation coefficient η | 0.1 |
+| Early stopping | Patience 20 (on SM val loss) |
+
+---
+
+## Phase 1 Findings
+
+### 1. Latent space convergence
+
+The PCA visualization of Z_G (clean encoder) and Z'_G (re-encoder on reconstructed graph) shows clear evidence that all three losses work together as intended.
+
+**Pre-training:** Z_G and Z'_G are entirely disjoint — large arbitrary gap across the latent space with no correspondence between original and reconstructed embeddings. Gray lines connecting paired points cross the entire PCA plane.
+
+**After full training (CT mature phase):** Z_G and Z'_G converge substantially. Paired points are close together across the distribution, confirming that L₃ successfully reduces the representation error for SM jets. The model also develops partial geometric structure in the embedding space — jets are not uniformly scattered but begin forming loose directional groupings, indicating that the SimCLR contrastive objective is shaping jet identity in the latent space. The combined action of L₁, L₂, and L₃ produces both faithful reconstruction (small Z_G − Z'_G gap) and emerging discriminative structure.
+
+### 2. Dirichlet energy — encoder stability comparison
+
+Dirichlet energy (DE) measures how well node embeddings retain distinct information throughout training. A high, stable DE means nodes remain distinguishable — critical for a fine-grained anomaly score. Collapse toward zero means over-smoothing: all nodes become identical and the encoder loses discriminative power.
+
+The benchmark across all GLAD variants shows a clear hierarchy:
+
+| Model | DE behaviour | Assessment |
+|---|---|---|
+| **StableChebNet-GLAD** | Starts ~21, remains stable at ~21 throughout 80 epochs | Best — high and consistent |
+| ChebNet-GLAD | Starts ~7, stabilises at ~5–6 | Moderate — acceptable but lower |
+| GCN-GLAD | Near zero throughout | Over-smoothed — poor |
+| GraphSAGE-GLAD | Near zero throughout | Over-smoothed — poor |
+| GATRewired-GLAD | Near zero throughout | Over-smoothed — poor |
+| **EdgeConv-GLAD** | Starts very high (~66) but collapses sharply to ~0 by epoch 5 — early stopped (ES@ep5) | Unstable — DE collapse triggered early stopping |
+
+StableChebNet-GLAD is the only model that combines high Dirichlet energy with training stability across 80 epochs. EdgeConv achieves the highest initial DE by far but is completely unstable — its message-passing mechanism destroys node distinguishability within a handful of epochs, making it unsuitable for long-range anomaly detection on jet graphs. ChebNet is stable but sits at a significantly lower DE floor (~5–6) compared to Stable ChebNet (~21), directly justifying the Phase 2 upgrade.
+
+### 3. Known limitation — latent space cluster formation
+
+PCA analysis of the trained latent space reveals a tight cluster of SM jets forming in one region of the embedding space. This is a manifold collapse artifact: the autoencoder learns a degenerate reconstruction shortcut, mapping a large fraction of diverse SM jets onto a single dominant "average SM" representation.
+
+The consequence for anomaly detection is a failure mode: a BSM jet whose graph structure partially resembles the SM average can land near this cluster in Z_G space, and its autoencoder reconstruction — being SM-ified toward the same cluster — produces a Z'_G that is also nearby. The L₃ representation error is then small despite the input being genuinely anomalous. This reduces sensitivity precisely in the region of BSM signal space that is hardest to detect.
+
+This limitation is identified as the primary open problem from Phase 1 and is the central motivation for Phase 2 architectural improvements.
+
+---
+
+## Phase 2 — Planned Improvements
+
+Phase 2 directly targets the cluster formation issue and upgrades the encoder backbone.
+
+- **Stable ChebNet encoder** with antisymmetric weight matrices and forward Euler updates — mathematically guaranteed Jacobian stability, enabling deeper K without over-smoothing
+- **RePU activations** replacing ReLU — better suited to Chebyshev polynomial approximation (paper [10])
+- **Uniformity loss** added to the contrastive objective — explicitly prevents SM embeddings from collapsing to a single region by penalising pairwise closeness across the batch
+- **Prototype-based anomaly scoring** — K-means fitted on SM Z_G after training; inference score measures distance from SM prototypes rather than relying solely on L₃
+- **Physics-informed edge features** — ΔR = √(Δη² + Δφ²), Δp_T incorporated into ChebNet aggregation
+- **Alternative pooling** — MinCut / DiffPool for multi-scale jet representation
+- **EMD auxiliary score** — Earth Mover Distance between input and reconstructed jet in (p_T, η, φ) space, orthogonal to the latent space signal
+
+---
+
+## Repository Structure
+
+```
+glad-scn/
+├── data/
+│   ├── preprocessing.py        # HDF5 parser, jet clustering, graph construction
+│   └── dataset.py              # PyG dataset, streaming DataLoader
+├── models/
+│   ├── encoder.py              # ChebNet / StableChebNet encoder blocks
+│   ├── decoder.py              # Structure + attribute decoders
+│   ├── projection.py           # MLP projection head
+│   └── glad_scn.py             # Full GlAD-SCN model
+├── losses/
+│   ├── reconstruction.py       # L₁
+│   ├── contrastive.py          # L₂ — SimCLR / InfoNCE
+│   └── representation.py       # L₃
+├── train.py                    # Two-stage training loop
+├── evaluate.py                 # Anomaly scoring, AUC-ROC, signal efficiency
+├── notebooks/
+│   ├── LHCO_Data_Preprocessing.ipynb
+│   └── ChebNet_Architecture_Search.ipynb
+└── README.md
+```
+
+---
+
+## Evaluation Metrics
+
+- **AUC-ROC** — primary benchmark metric
+- **Signal efficiency at fixed background rejection** — 10%, 1%, 0.1% (standard LHCO format)
+- **Anomaly score distributions** — SM vs BSM histogram separation
+- **Dirichlet energy per epoch** — encoder stability diagnostic
+- **PCA of Z_G vs Z'_G** — latent space convergence diagnostic
+
+---
+
+## References
+
+[1] Hariri et al. — Graph VAE for Detector Reconstruction, NeurIPS ML4PS 2020  
+[2] Luo et al. — Deep Graph Level Anomaly Detection with Contrastive Learning, *Scientific Reports* 2022  
+[3] Hariri et al. — Return of ChebNet, arXiv:2104.01725  
+[5] Collins, Howe, Nachman — Anomaly Detection for Resonant New Physics, *PRL* 2018  
+[7] Larkoski, Moult, Nachman — Jet Substructure at the LHC, *Physics Reports* 2020  
+[10] Tang, Li, Yu — ChebNet with Rectified Power Units, 2020  
+[*] Kasieczka et al. — LHC Olympics 2020, *Reports on Progress in Physics* 2021  
+    R&D Dataset: zenodo.org/record/4536377
+
+---
+
+*Mentors: Sergei Gleyzer (University of Alabama) · Ali Hariri (EPFL) · Amal Saif (PSUT) · Tom Magorsch (TUM)*
 # RnD Olympics 2020: Graph Preprocessing Pipeline
 
 This repository contains the preprocessing workflow for the **RnD Olympics Dataset 2020**. The pipeline transforms raw, tabular particle physics data into graph-structured objects suitable for Geometric Deep Learning (GDL).
