@@ -2,7 +2,8 @@
 
 This repository contains the preprocessing workflow for the **RnD Olympics Dataset 2020**. The pipeline transforms raw, tabular particle physics data into graph-structured objects suitable for Geometric Deep Learning (GDL).
 
----
+<img width="690" height="895" alt="image" src="https://github.com/user-attachments/assets/f4b28fc0-ccf2-48d6-a340-657d1057ef23" />
+
 
 ## 1. Dataset Overview
 The dataset consists of simulated high-energy physics events used to train models for anomaly detection and event classification.
